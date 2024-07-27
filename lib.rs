@@ -1,44 +1,111 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
 #[ink::contract]
-mod flipper {
+mod tarot {
+    use ink::env::hash::{
+        HashOutput,
+        Blake2x128,
+    };
+    use ink::storage::Mapping;
+    use ink::prelude::vec::Vec;
+
+    // TarotDraw is an event for tracking a Tarot Reading.
+    // The drawing field will have at least 1 but no more than 3
+    // cards drawn in any given Drawing.
+    #[ink::event]
+    pub struct TarotDraw {
+        #[ink(topic)]
+        from: AccountId,
+        #[ink(topic)]
+        drawing: Vec<[u8; 16]>
+    }
+
 
     /// Defines the storage of your contract.
     /// Add new fields to the below struct in order
     /// to add new static storage fields to your contract.
     #[ink(storage)]
-    pub struct Flipper {
-        /// Stores a single `bool` value on the storage.
-        value: bool,
+    pub struct Tarot {
+        /// owner is the account id owner that can collect payments to
+        /// this contract.
+        owner: AccountId,
+        /// fee is the minimum fee that mus be paid to draw a card
+        fee: Balance,
+        /// readings stores a mapping of AccountId's to drawings
+        readings: Mapping<AccountId, Vec<[u8; 16]>>
     }
 
-    impl Flipper {
-        /// Constructor that initializes the `bool` value to the given `init_value`.
+    #[ink::scale_derive(Encode, Decode, TypeInfo)]
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum Error {
+        InsufficientFee,
+        MustBeOwner,
+    }
+
+    impl Tarot {
+        /// new initializes an empty mapping of readings.
         #[ink(constructor)]
-        pub fn new(init_value: bool) -> Self {
-            Self { value: init_value }
+        pub fn new(fee: Balance) -> Self {
+            Tarot {
+                readings: Mapping::default(),
+                fee,
+                owner: Self::env().caller()
+            }
         }
 
-        /// Constructor that initializes the `bool` value to `false`.
-        ///
-        /// Constructors can delegate to other constructors.
-        #[ink(constructor)]
-        pub fn default() -> Self {
-            Self::new(Default::default())
+        #[ink(message, payable)]
+        pub fn draw(&mut self, seed: [u8; 16]) -> Result<[u8; 16], Error> {
+            let caller = self.env().caller();
+
+            if self.env().transferred_value() < self.fee {
+                return Err(Error::InsufficientFee);
+            }
+
+            let ts = self.env().block_timestamp();
+            let bn = self.env().block_number();
+            let cb = self.env().balance();
+            let gl = self.env().gas_left();
+            let ch = self.env().own_code_hash().unwrap();
+
+            let encodable = (ts, bn, cb, gl, ch, seed);
+
+            let mut draw = <Blake2x128 as HashOutput>::Type::default();
+            ink::env::hash_encoded::<Blake2x128, _>(&encodable,
+                                                    &mut draw);
+
+            let mut current: Vec<[u8; 16]> = self.readings.get(caller).unwrap_or(
+                Vec::new());
+            if current.len() >= 3 {
+                current = Vec::new();
+            }
+            current.push(draw);
+
+            self.readings.insert(caller, &current);
+
+            Ok(draw)
         }
 
-        /// A message that can be called on instantiated contracts.
-        /// This one flips the value of the stored `bool` from `true`
-        /// to `false` and vice versa.
+        /// change_owner change the contract owner
         #[ink(message)]
-        pub fn flip(&mut self) {
-            self.value = !self.value;
+        pub fn change_owner(&mut self, new_owner: AccountId) -> Result<(), Error> {
+            let caller = self.env().caller();
+            if caller != self.owner {
+                return Err(Error::InsufficientFee);
+            }
+            self.owner = new_owner;
+            Ok(())
         }
 
-        /// Simply returns the current value of our `bool`.
+        /// fee simply returns the current fee
         #[ink(message)]
-        pub fn get(&self) -> bool {
-            self.value
+        pub fn fee(&self) -> Balance {
+            self.fee
+        }
+
+        /// withdraw balance to the contract owner.
+        pub fn withdraw(&mut self) {
+            let balance = self.env().balance();
+            self.env().transfer(self.owner, balance).unwrap()
         }
     }
 
@@ -47,23 +114,16 @@ mod flipper {
     /// The below code is technically just normal Rust code.
     #[cfg(test)]
     mod tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
+        /// Imports all the definitions from the outer scope so we can
+        /// use them here.
         use super::*;
-
-        /// We test if the default constructor does its job.
-        #[ink::test]
-        fn default_works() {
-            let flipper = Flipper::default();
-            assert_eq!(flipper.get(), false);
-        }
 
         /// We test a simple use case of our contract.
         #[ink::test]
         fn it_works() {
-            let mut flipper = Flipper::new(false);
-            assert_eq!(flipper.get(), false);
-            flipper.flip();
-            assert_eq!(flipper.get(), true);
+            let mut t = Tarot::new(100);
+            assert_eq!(t.fee(), 100);
+            // assert_eq!(t.fee(), 100);
         }
     }
 
@@ -84,56 +144,34 @@ mod flipper {
         /// The End-to-End test `Result` type.
         type E2EResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-        /// We test that we can upload and instantiate the contract using its default constructor.
-        #[ink_e2e::test]
-        async fn default_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            let mut constructor = FlipperRef::default();
-
-            // When
-            let contract = client
-                .instantiate("flipper", &ink_e2e::alice(), &mut constructor)
-                .submit()
-                .await
-                .expect("instantiate failed");
-            let call_builder = contract.call_builder::<Flipper>();
-
-            // Then
-            let get = call_builder.get();
-            let get_result = client.call(&ink_e2e::alice(), &get).dry_run().await?;
-            assert!(matches!(get_result.return_value(), false));
-
-            Ok(())
-        }
-
         /// We test that we can read and write a value from the on-chain contract.
         #[ink_e2e::test]
         async fn it_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
             // Given
-            let mut constructor = FlipperRef::new(false);
+            let mut constructor = TarotRef::new(100);
             let contract = client
-                .instantiate("flipper", &ink_e2e::bob(), &mut constructor)
+                .instantiate("tarot", &ink_e2e::bob(), &mut constructor)
                 .submit()
                 .await
                 .expect("instantiate failed");
-            let mut call_builder = contract.call_builder::<Flipper>();
+            let mut call_builder = contract.call_builder::<Tarot>();
 
             let get = call_builder.get();
             let get_result = client.call(&ink_e2e::bob(), &get).dry_run().await?;
-            assert!(matches!(get_result.return_value(), false));
+            assert!(matches!(get_result.return_value(), 100));
 
             // When
-            let flip = call_builder.flip();
+            let flip = call_builder.fee();
             let _flip_result = client
-                .call(&ink_e2e::bob(), &flip)
+                .call(&ink_e2e::bob(), &fee)
                 .submit()
                 .await
-                .expect("flip failed");
+                .expect("fee failed");
 
             // Then
             let get = call_builder.get();
             let get_result = client.call(&ink_e2e::bob(), &get).dry_run().await?;
-            assert!(matches!(get_result.return_value(), true));
+            assert!(matches!(get_result.return_value(), 100));
 
             Ok(())
         }

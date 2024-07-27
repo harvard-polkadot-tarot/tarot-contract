@@ -1,7 +1,7 @@
 [package]
-name = "flipper"
+name = "tarot"
 version = "0.1.0"
-authors = ["[your_name] <[your_email]>"]
+authors = ["Richard Carback <rick@houseless.tech>"]
 edition = "2021"
 
 [dependencies]
