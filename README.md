@@ -25,3 +25,7 @@ https://tarodot.net/video.mp4
 # Slides
 
 https://www.canva.com/design/DAGMLjxrZCo/UrwsisFnD9zU4Wf8Nzg0oQ/edit
+
+# Presentation
+
+https://tarodot.net/presentation.mp4
