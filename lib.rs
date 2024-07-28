@@ -103,6 +103,7 @@ mod tarot {
         }
 
         /// withdraw balance to the contract owner.
+        #[ink(message)]
         pub fn withdraw(&mut self) {
             let balance = self.env().balance();
             self.env().transfer(self.owner, balance).unwrap()
